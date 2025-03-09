@@ -10,7 +10,7 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}===== mGBA-http Server Runner =====${NC}"
 
 # Check if mGBA is installed
-if ! command -v mgba-qt &> /dev/null; then
+if ! command -v mgba &> /dev/null; then
     echo -e "${RED}mGBA is not installed or not in PATH.${NC}"
     echo -e "${YELLOW}Please install mGBA from https://mgba.io/downloads.html${NC}"
     exit 1
@@ -47,12 +47,12 @@ echo -e "${GREEN}mGBA-http built successfully!${NC}"
 
 # Check if ROM file is provided
 if [ "$#" -eq 1 ]; then
-    ROM_FILE="$1"
+    ROM_FILE="Pokemon Emerald (U).gba"
     echo -e "${YELLOW}Using ROM file: ${ROM_FILE}${NC}"
     
     # Start mGBA with the ROM file
     echo -e "${YELLOW}Starting mGBA with ${ROM_FILE}...${NC}"
-    mgba-qt "$ROM_FILE" &
+    mgba "$ROM_FILE" &
     MGBA_PID=$!
     echo -e "${GREEN}mGBA started with PID: ${MGBA_PID}${NC}"
 elif [ "$#" -gt 1 ]; then
@@ -60,10 +60,8 @@ elif [ "$#" -gt 1 ]; then
     echo -e "${YELLOW}Usage: ./run.sh [ROM_FILE]${NC}"
     exit 1
 else
-    echo -e "${YELLOW}No ROM file provided. Starting mGBA without a ROM...${NC}"
-    mgba-qt &
-    MGBA_PID=$!
-    echo -e "${GREEN}mGBA started with PID: ${MGBA_PID}${NC}"
+    echo -e "${RED}No ROM file provided."
+    exit 1
 fi
 
 # Wait for mGBA to initialize

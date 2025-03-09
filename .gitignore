@@ -45,3 +45,7 @@ ENV/
 *.sav
 *.sgm
 *.ss* 
+Pokemon Emerald (U).gba
+.env
+
+*.png
