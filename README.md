@@ -31,6 +31,8 @@ For vision-based features, you'll need a Google Gemini API key. You can set it u
    GEMINI_API_KEY=your_api_key_here
    ```
 
+There's also support for OpenAI, Deepseek, and Claude.
+
 2. Or pass it directly to scripts that require it with the `--api-key` parameter.
 
 ### Quick Setup

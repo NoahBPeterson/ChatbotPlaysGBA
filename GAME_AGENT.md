@@ -174,4 +174,76 @@ For debugging issues, check the following:
 - The agent's performance depends heavily on the quality of the LLM responses
 - There may be a delay between observation and action due to API call latency
 - Memory reading capabilities are game-specific and may require customization
-- The solution is optimized for Pokémon games and may need adaptation for other games 
+- The solution is optimized for Pokémon games and may need adaptation for other games
+
+## Advanced Features
+
+### Function Calling Integration
+
+The GameAgent now supports function calling with all major LLM providers:
+
+- **OpenAI**: Using the latest tools API with structured outputs and strict schema validation
+- **Anthropic**: Leveraging Claude 3.7's tool use capabilities with extended thinking
+- **Gemini**: Utilizing Google's function calling interface
+
+This function calling integration enables more structured and reliable interactions, allowing the LLMs to make precise, well-typed requests for game actions. Instead of generating free-form text that needs to be parsed, the models now generate structured function calls that directly map to game commands.
+
+Benefits of function calling integration:
+- More reliable action generation
+- Stricter parameter validation
+- Better error handling
+- More consistent responses across different LLM providers
+
+### Claude 3.7 Extended Thinking
+
+The GameAgent supports Claude 3.7's extended thinking capabilities, which allows the model to perform much more thorough analysis of complex game situations before making decisions. This is particularly useful for:
+
+- Analyzing complex puzzles with multiple potential solutions
+- Planning multi-step sequences in battles or navigation challenges
+- Considering the long-term implications of game choices
+
+When using the `anthropic` provider with Claude 3.7, the system automatically enables extended thinking with a token budget of 8,000 tokens. This means Claude can perform detailed reasoning before deciding on actions.
+
+Example of using Claude 3.7 with extended thinking:
+
+```bash
+# Run with Claude 3.7 Sonnet for complex decision making
+./game_agent.py --provider anthropic --model claude-3-7-sonnet-20250219
+```
+
+The extended thinking is visible in the logs, where you'll see Claude's step-by-step reasoning process before it recommends actions.
+
+### Hybrid Memory and Vision Approach
+
+The GameAgent uses a hybrid approach combining both memory reading and visual analysis to make decisions. This allows the agent to:
+
+- **Memory Reading**: Access game memory to retrieve additional state data
+- **Visual Analysis**: Use computer vision to analyze the game screen
+
+This combination provides a rich understanding of the game state, incorporating both internal game data and visual cues.
+
+## Provider Consistency
+
+The GameAgent now ensures consistency between text and vision models when using the same provider. This means:
+
+1. **OpenAI**: Uses GPT-4o for text interactions and GPT-4o Vision for image analysis.
+2. **Anthropic**: Uses Claude for text interactions and Claude's vision capabilities for image analysis.
+3. **Gemini**: Uses Gemini models for both text and vision.
+4. **DeepSeek**: Uses DeepSeek models for text, and falls back to Gemini for vision (as DeepSeek currently lacks vision capabilities).
+
+This consistency ensures:
+- More coherent understanding between what the agent sees and how it responds
+- Less confusion when transitioning between visual and text analysis
+- Consistent quality of analysis and decision-making
+
+To use a specific provider, use the `--provider` flag:
+```
+./test_game_agent.py --provider openai --steps 10
+./test_game_agent.py --provider anthropic --steps 10
+./test_game_agent.py --provider gemini --steps 10
+./test_game_agent.py --provider deepseek --steps 10
+```
+
+### Special Handling for Title Screens
+
+The GameAgent includes special handling for title screens to ensure the agent can progress past them consistently. When the vision system identifies the current screen as a title screen, it provides explicit instructions to press START or A to begin the game. This automatic handling works across all supported providers. 

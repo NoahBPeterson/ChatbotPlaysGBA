@@ -18,6 +18,18 @@ import subprocess
 import requests
 from PIL import Image, ImageGrab
 import google.generativeai as genai
+
+# Import providers for consistency with game_agent.py
+try:
+    import openai
+except ImportError:
+    openai = None
+
+try:
+    from anthropic import Anthropic
+except ImportError:
+    Anthropic = None
+
 from mgba_controller import MGBAController, Button, MemoryDomain
 
 # Configure logging
@@ -60,21 +72,25 @@ class VisionController:
     but falls back to vision capabilities when needed.
     """
     def __init__(self, 
-                 api_key: str, 
+                 api_key: str,
+                 provider_name: str = "gemini",
                  mgba_controller: Optional[MGBAController] = None, 
                  mgba_window_title: str = "mGBA"):
         """
         Initialize the vision controller.
         
         Args:
-            api_key: Gemini API key
+            api_key: API key for the vision model
+            provider_name: Name of the provider to use (gemini, openai, anthropic)
             mgba_controller: Existing MGBAController instance or None to create a new one
             mgba_window_title: Window title of the mGBA emulator for screen capture
         """
-        # Set up Gemini API access
+        # Store API key and provider name
         self.api_key = api_key
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.provider_name = provider_name.lower()
+        
+        # Initialize the vision model based on provider
+        self._initialize_vision_model()
         
         # Initialize the mGBA controller
         self.controller = mgba_controller if mgba_controller else MGBAController()
@@ -97,6 +113,132 @@ class VisionController:
             logger.warning(f"No memory map available for {self.controller.game_title}")
         
         logger.info("Vision Controller initialized successfully")
+    
+    def _initialize_vision_model(self):
+        """Initialize the vision model based on the provider name."""
+        if self.provider_name == "gemini":
+            genai.configure(api_key=self.api_key)
+            self.model = genai.GenerativeModel('gemini-2.0-flash')
+            self.model_type = "gemini"
+            logger.info("Initialized Gemini vision model")
+        elif self.provider_name == "openai":
+            if openai is None:
+                raise ImportError("OpenAI package not installed. Install with 'pip install openai'")
+            self.model = openai.OpenAI(api_key=self.api_key)
+            self.model_type = "openai"
+            logger.info("Initialized OpenAI vision model")
+        elif self.provider_name == "anthropic":
+            if Anthropic is None:
+                raise ImportError("Anthropic package not installed. Install with 'pip install anthropic'")
+            self.model = Anthropic(api_key=self.api_key)
+            self.model_type = "anthropic"
+            logger.info("Initialized Anthropic vision model")
+        elif self.provider_name == "deepseek":
+            # DeepSeek doesn't have vision capabilities yet, so we'll fall back to Gemini
+            # but get a separate Gemini API key for vision
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_api_key:
+                logger.warning("DeepSeek provider doesn't support vision and no GEMINI_API_KEY found. Falling back to basic vision capabilities.")
+                self.model_type = "basic"
+            else:
+                genai.configure(api_key=gemini_api_key)
+                self.model = genai.GenerativeModel('gemini-2.0-flash')
+                self.model_type = "gemini"
+                logger.info("Using Gemini vision model with DeepSeek provider")
+        else:
+            # Default to Gemini if unknown provider
+            logger.warning(f"Unknown provider {self.provider_name}, falling back to Gemini")
+            genai.configure(api_key=self.api_key)
+            self.model = genai.GenerativeModel('gemini-2.0-flash')
+            self.model_type = "gemini"
+            
+    def _generate_vision_content(self, prompt: str, image_path: str) -> str:
+        """
+        Generate content from vision model based on the provider type.
+        
+        Args:
+            prompt: Text prompt for the vision model
+            image_path: Path to the image file
+            
+        Returns:
+            The generated text response
+        """
+        img = Image.open(image_path)
+        
+        if self.model_type == "gemini":
+            response = self.model.generate_content([prompt, img])
+            return response.text
+        
+        elif self.model_type == "openai":
+            # Encode image to base64
+            with open(image_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                
+            response = self.model.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant that analyzes game screenshots."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]}
+                ],
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+            
+        elif self.model_type == "anthropic":
+            # Convert image to JPEG and encode to base64
+            # Create a temporary JPEG file
+            jpeg_path = image_path
+            if not image_path.lower().endswith('.jpg') and not image_path.lower().endswith('.jpeg'):
+                temp_jpeg = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+                jpeg_path = temp_jpeg.name
+                temp_jpeg.close()
+                
+                # Convert to JPEG
+                img = img.convert('RGB')
+                img.save(jpeg_path, 'JPEG')
+                logger.info(f"Converted image to JPEG at {jpeg_path}")
+            
+            # Read and encode the JPEG image
+            with open(jpeg_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # Delete temporary file if created
+            if jpeg_path != image_path:
+                try:
+                    os.unlink(jpeg_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary JPEG file: {e}")
+                
+            response = self.model.messages.create(
+                model="claude-3-5-sonnet-20240620",
+                max_tokens=1000,
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64_image}}
+                    ]}
+                ]
+            )
+            return response.content[0].text
+            
+        elif self.model_type == "basic":
+            # If no vision model is available, return a basic description
+            logger.warning("Using basic vision capabilities (no actual image processing)")
+            
+            # Extract filename and dimensions as basic info
+            filename = os.path.basename(image_path)
+            width, height = img.size
+            
+            # Return a generic description
+            return f"This appears to be a screenshot from a Pokémon game ({width}x{height} pixels). " \
+                   f"Without advanced vision capabilities, I can't analyze the specific details. " \
+                   f"You may want to press common navigation buttons like A, START, or directional buttons to progress."
+        
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
     
     def read_map_from_memory(self) -> Dict[str, Any]:
         """
@@ -180,99 +322,95 @@ class VisionController:
     
     def build_tile_map_from_vision(self) -> List[List[int]]:
         """
-        Use Gemini Vision to analyze the screen and build a tile map.
+        Use vision to build a tile map when memory reading fails.
         
         Returns:
-            2D list of tile types (using TileType constants)
+            List[List[int]]: 2D grid of tile types
         """
-        self.capture_screen()
-        img = Image.open(self.last_screenshot_path)
+        screenshot_path = self.capture_screen()
         
-        # Create a specialized prompt for tile mapping
         prompt = """
-        Analyze this Pokémon game screenshot and identify the tile-based structure of the map.
+        Analyze this Pokémon game screenshot and create a grid representing the walkable area.
         
-        1. Identify the player's position within the grid
-        2. Map out a grid of tiles around the player (approximately 7x7 tiles)
-        3. Classify each tile as one of:
-           - FLOOR: Normal walkable tiles
-           - WALL: Impassable barriers
-           - WATER: Water tiles
-           - ICE: Ice tiles that cause sliding
-           - LEDGE: One-way passages
-           - DOOR: Entrances/exits
-           - NPC: Characters
-           - GRASS: Wild Pokémon encounters
-           - TREE: Cuttable trees
+        For each tile, indicate:
+        - 0 for floor/walkable space
+        - 1 for walls/solid obstacles
+        - 2 for water
+        - 3 for ice
+        - 4 for ledges
+        - 5 for doors
+        - 6 for NPCs
+        - 7 for grass
+        - 8 for trees
+        - 99 for unknown/unclear
         
-        Return the data as a JSON with:
-        1. player_position: [x, y] (where [0,0] is top-left of your grid)
-        2. grid: A 2D array where each cell contains the tile type
-        3. objects: Any special objects visible (NPCs, items) with their coordinates
-        
-        For example:
-        {
-          "player_position": [3, 3],
-          "grid": [
-            ["WALL", "WALL", "WALL", "DOOR", "WALL", "WALL", "WALL"],
-            ["WALL", "FLOOR", "FLOOR", "FLOOR", "FLOOR", "FLOOR", "WALL"],
-            ...
-          ],
-          "objects": [
-            {"type": "NPC", "position": [5, 2], "description": "woman in red"}
-          ]
-        }
+        Return only a 10x10 grid centered on the player if possible. Format your response 
+        as a grid of numbers, exactly like this:
+        [[0,0,1,1,1,1,0,0,0,0],
+         [0,0,0,1,1,0,0,0,0,0],
+         ...and so on for 10 rows]
         """
         
         try:
-            response = self.model.generate_content([prompt, img])
+            response_text = self._generate_vision_content(prompt, screenshot_path)
             
-            # Extract the JSON from the response
-            result = response.text
+            # Extract the grid from the response
+            grid_text = response_text
             
-            if "```json" in result:
-                result = result.split("```json")[1].split("```")[0].strip()
-            elif "```" in result:
-                result = result.split("```")[1].split("```")[0].strip()
+            # Look for grid between triple backticks if present
+            if "```" in grid_text:
+                grid_text = grid_text.split("```")[1].split("```")[0].strip()
+                # Remove any language identifier like "json"
+                if grid_text.startswith("json") or grid_text.startswith("python"):
+                    grid_text = grid_text.split("\n", 1)[1]
             
-            data = json.loads(result)
+            # Try to clean up and parse the text
+            try:
+                # First attempt: Clean up and parse as JSON
+                grid_text = grid_text.replace(" ", "").replace("\n", "")
+                grid = json.loads(grid_text)
+                
+                # Validate the grid
+                if not isinstance(grid, list) or not all(isinstance(row, list) for row in grid):
+                    logger.warning(f"Invalid grid format returned from vision: not a 2D list")
+                    raise ValueError("Not a valid 2D grid")
+                
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Couldn't parse grid as JSON, falling back to manual parsing: {e}")
+                
+                # Second attempt: Manual parsing
+                # Try to extract rows with regex
+                import re
+                rows = re.findall(r'\[\s*(\d+(?:\s*,\s*\d+)+)\s*\]', grid_text)
+                
+                if not rows:
+                    logger.warning("Couldn't find valid rows in the grid text")
+                    # Create a default 3x3 grid with player in center
+                    return [[99, 99, 99], [99, 0, 99], [99, 99, 99]]
+                
+                # Convert text rows to number lists
+                grid = []
+                for row in rows:
+                    # Split by comma and convert to integers
+                    try:
+                        numeric_row = [int(num.strip()) for num in row.split(',')]
+                        grid.append(numeric_row)
+                    except ValueError:
+                        logger.warning(f"Invalid row format: {row}")
+                        continue
+                
+                # Check if we have a valid grid now
+                if not grid or not all(len(row) > 0 for row in grid):
+                    logger.warning("Failed to parse a valid grid with manual parsing")
+                    return [[99, 99, 99], [99, 0, 99], [99, 99, 99]]
             
-            # Convert the text-based grid to numeric tile types
-            type_mapping = {
-                "FLOOR": TileType.FLOOR,
-                "WALL": TileType.WALL,
-                "WATER": TileType.WATER,
-                "ICE": TileType.ICE,
-                "LEDGE": TileType.LEDGE,
-                "DOOR": TileType.DOOR,
-                "NPC": TileType.NPC,
-                "GRASS": TileType.GRASS,
-                "TREE": TileType.TREE
-            }
-            
-            numeric_grid = []
-            for row in data["grid"]:
-                numeric_row = []
-                for cell in row:
-                    numeric_row.append(type_mapping.get(cell, TileType.UNKNOWN))
-                numeric_grid.append(numeric_row)
-            
-            # Store the player position
-            if "player_position" in data:
-                self.player_position = tuple(data["player_position"])
-            
-            # Store the complete tile map
-            self.tile_map = numeric_grid
-            return numeric_grid
+            logger.info(f"Successfully built tile map from vision: {len(grid)}x{len(grid[0]) if grid else 0}")
+            return grid
             
         except Exception as e:
-            logger.error(f"Error building tile map from vision: {e}")
-            # Return a minimal 3x3 unknown grid centered on the player
-            return [
-                [TileType.UNKNOWN, TileType.UNKNOWN, TileType.UNKNOWN],
-                [TileType.UNKNOWN, TileType.FLOOR, TileType.UNKNOWN],
-                [TileType.UNKNOWN, TileType.UNKNOWN, TileType.UNKNOWN]
-            ]
+            logger.error(f"Failed to build tile map from vision: {e}")
+            # Return a minimal 3x3 grid with player in center as fallback
+            return [[99, 99, 99], [99, 0, 99], [99, 99, 99]]
     
     def get_tile_at(self, x: int, y: int) -> int:
         """
@@ -301,63 +439,7 @@ class VisionController:
                 return self.tile_map[grid_y][grid_x]
         
         return TileType.UNKNOWN
-    
-    def predict_ice_slide_endpoint(self, start_x: int, start_y: int, direction: str) -> Tuple[int, int]:
-        """
-        Predict where the player will end up after sliding on ice in a given direction.
-        
-        Args:
-            start_x: Starting X coordinate
-            start_y: Starting Y coordinate
-            direction: "up", "down", "left", or "right"
-            
-        Returns:
-            Tuple of (end_x, end_y)
-        """
-        # Ensure we have an up-to-date tile map
-        if self.tile_map is None:
-            self.build_tile_map()
-        
-        # Define direction vectors
-        direction_vectors = {
-            "up": (0, -1),
-            "down": (0, 1),
-            "left": (-1, 0),
-            "right": (1, 0)
-        }
-        
-        # Get the direction vector
-        dx, dy = direction_vectors.get(direction.lower(), (0, 0))
-        
-        # Start at the initial position
-        x, y = start_x, start_y
-        
-        # Keep sliding until hitting a non-ice tile
-        max_steps = 20  # Safety limit
-        steps = 0
-        while steps < max_steps:
-            # Move one tile in the direction
-            next_x = x + dx
-            next_y = y + dy
-            
-            # Check the next tile
-            next_tile = self.get_tile_at(next_x, next_y)
-            
-            # If it's a wall or other obstacle, stop at the current position
-            if next_tile in [TileType.WALL, TileType.TREE, TileType.NPC]:
-                return (x, y)
-            
-            # If it's not ice, stop at the next position
-            if next_tile != TileType.ICE:
-                return (next_x, next_y)
-            
-            # Otherwise, continue sliding
-            x, y = next_x, next_y
-            steps += 1
-        
-        # If we've reached the step limit, just return the final position
-        return (x, y)
-    
+
     def capture_screen(self, save_path: Optional[str] = None) -> str:
         """
         Capture a screenshot of the mGBA window using the mGBA-http API.
@@ -428,7 +510,7 @@ class VisionController:
     
     def analyze_screen(self, screenshot_path: Optional[str] = None) -> Dict[str, Any]:
         """
-        Analyze a screenshot using Gemini's Vision API.
+        Analyze a screenshot using the vision model.
         
         Args:
             screenshot_path: Path to the screenshot or None to capture a new one
@@ -444,269 +526,166 @@ class VisionController:
             logger.info("Using memory data for screen analysis")
             
             # Try to build a more complete map from memory
-            self.build_tile_map(vision_fallback=False)
+            self.tile_map = self.build_tile_map(vision_fallback=True)
             
-            # We'll still need to use vision for some things like determining the location name
-            # and recommended moves, but we'll integrate the memory data
+            # If we don't have a memory map or it failed, fall back to vision
+            if not self.tile_map:
+                logger.warning("Failed to build tile map, falling back to vision")
         
-        # Capture a new screenshot if none provided
-        if screenshot_path is None:
-            if self.last_screenshot_path and os.path.exists(self.last_screenshot_path):
-                screenshot_path = self.last_screenshot_path
-            else:
-                screenshot_path = self.capture_screen()
+        # For the detailed analysis, we'll use vision regardless
+        # First capture a screenshot if one wasn't provided
+        if not screenshot_path:
+            screenshot_path = self.capture_screen()
         
-        # Load the image
-        img = Image.open(screenshot_path)
-        
-        # Craft the prompt, mentioning we prefer structured tile-based information
         prompt = """
-        Analyze this Pokémon game screenshot and provide the following information:
-        1. Current location (town/route/building)
-        2. Player position (coordinates or description)
-        3. Visible obstacles or special tiles (e.g., ledges, water, ice)
-        4. Visible NPCs or objects
-        5. Recommended next move(s) if navigating to exit or key location
+        You are analyzing a screenshot from a Pokémon game. Describe in detail:
+        1. Where the player is (town, route, building, etc.)
+        2. What NPCs are visible
+        3. Any important objects or features
+        4. Available paths/exits
+        5. Any text visible on screen
         
-        IMPORTANT: If this is a tile-based puzzle (especially an ice puzzle), please:
-        - Provide coordinates in a grid format where each cell is one traversable tile
-        - Specify the exact coordinates of walls, obstacles and ice tiles
-        - Give player position as (x,y) coordinates in this grid
-        
-        Format your response as JSON with these fields:
-        {
-          "location": "...",
-          "player_position": "...",
-          "obstacles": [...],
-          "npcs": [...],
-          "special_tiles": [...],
-          "exits": [...],
-          "tile_grid": [[]], // Include if it's a visible puzzle area
-          "recommended_moves": [...]
-        }
+        Keep your response clear and concise, focusing on factual observations.
         """
         
         try:
-            response = self.model.generate_content([prompt, img])
+            response_text = self._generate_vision_content(prompt, screenshot_path)
+            logger.info(f"Successfully analyzed screen: {response_text[:50]}...")
             
-            # Extract the JSON from the response
-            result = response.text
+            # Parse the response into a more structured format
+            analysis = {
+                "description": response_text,
+                "location_type": self._determine_location_type(response_text),
+                "objects": [],
+                "npcs": [],
+                "exits": [],
+                "player_position": self.player_position,
+                "map_id": memory_data.get("map_id", 0) if memory_data else 0
+            }
             
-            # Clean up the result to make sure it's valid JSON
-            # Look for JSON between triple backticks if present
-            if "```json" in result:
-                result = result.split("```json")[1].split("```")[0].strip()
-            elif "```" in result:
-                result = result.split("```")[1].split("```")[0].strip()
-            
-            analysis = json.loads(result)
-            
-            # Integrate memory data if available
-            if memory_data:
-                if "player_position" in memory_data:
-                    analysis["player_position_memory"] = memory_data["player_position"]
-                if "map_id" in memory_data:
-                    analysis["map_id"] = memory_data["map_id"]
-            
-            logger.info(f"Successfully analyzed screen: {analysis['location']}")
             return analysis
-        
+            
         except Exception as e:
             logger.error(f"Error analyzing screen: {e}")
             return {
-                "error": str(e),
-                "location": "unknown",
-                "player_position": "unknown",
-                "obstacles": [],
-                "recommended_moves": []
+                "description": "Analysis failed due to an error",
+                "location_type": "unknown",
+                "objects": [],
+                "npcs": [],
+                "exits": [],
+                "player_position": self.player_position,
+                "map_id": memory_data.get("map_id", 0) if memory_data else 0
             }
+    
+    def _determine_location_type(self, description: str) -> str:
+        """Determine the location type from the description."""
+        description_lower = description.lower()
+        
+        # Special case for title screen
+        if "title screen" in description_lower:
+            return "title_screen"
+        elif "town" in description_lower or "city" in description_lower:
+            return "town"
+        elif "route" in description_lower:
+            return "route"
+        elif "building" in description_lower or "center" in description_lower or "mart" in description_lower:
+            return "building"
+        elif "cave" in description_lower:
+            return "cave"
+        else:
+            return "unknown"
     
     def navigate_complex_area(self, target_description: str, max_steps: int = 10) -> bool:
         """
-        Use a hybrid approach to navigate through a complex area.
-        Prioritizes memory reading for tile data, with vision as backup.
+        Navigate through a complex area using vision guidance.
         
         Args:
-            target_description: Description of the target location
-            max_steps: Maximum number of steps to attempt
+            target_description: Description of the target (e.g., "exit", "Pokemon Center")
+            max_steps: Maximum number of steps to take
             
         Returns:
-            bool: True if navigation was successful
+            bool: True if successful, False otherwise
         """
-        logger.info(f"Attempting to navigate to: {target_description}")
+        logger.info(f"Navigating to {target_description}")
         
         for step in range(max_steps):
-            # First try to read map data from memory
-            map_data = self.read_map_from_memory()
+            logger.info(f"Navigation step {step+1}/{max_steps}")
             
-            # Build a tile map (will use vision as fallback if memory reading fails)
-            tile_map = self.build_tile_map()
+            # Capture the current state
+            screenshot_path = self.capture_screen()
             
-            # Now get additional context from vision
-            analysis = self.analyze_screen()
+            # First, analyze what we're seeing
+            analysis = self.analyze_screen(screenshot_path)
             
-            # Check if we've reached the target
-            if target_description.lower() in analysis["location"].lower():
-                logger.info(f"Reached target: {target_description}")
-                return True
+            # Then ask for the next move
+            prompt = f"""
+            I'm trying to navigate to: {target_description}
             
-            # Determine next move using a hybrid approach
-            next_move = self.determine_next_move(analysis, target_description, tile_map)
+            Based on this screenshot, tell me the SINGLE BEST button to press next.
+            Respond with ONLY ONE of: UP, DOWN, LEFT, RIGHT, A, B, START, SELECT
             
-            if next_move:
-                logger.info(f"Step {step+1}/{max_steps}: Taking move: {next_move}")
+            Choose the direction that will most likely lead me to my destination.
+            """
+            
+            try:
+                response_text = self._generate_vision_content(prompt, screenshot_path)
+                
+                # Extract just the button name
+                button_text = response_text.strip().upper()
+                if "UP" in button_text:
+                    button = "UP"
+                elif "DOWN" in button_text:
+                    button = "DOWN"
+                elif "LEFT" in button_text:
+                    button = "LEFT"
+                elif "RIGHT" in button_text:
+                    button = "RIGHT"
+                elif "A" in button_text:
+                    button = "A"
+                elif "B" in button_text:
+                    button = "B"
+                elif "START" in button_text:
+                    button = "START"
+                elif "SELECT" in button_text:
+                    button = "SELECT"
+                else:
+                    button = "A"  # Default to A if no clear direction
+                
+                logger.info(f"Navigation move: {button}")
                 
                 # Execute the move
-                self.execute_move(next_move)
+                self.execute_text_move(button)
                 
-                # Wait for movement to complete
-                time.sleep(1)
-            else:
-                logger.warning("Couldn't determine next move")
-                # Try following recommended moves from vision as fallback
-                if "recommended_moves" in analysis and analysis["recommended_moves"]:
-                    fallback_move = analysis["recommended_moves"][0]
-                    logger.info(f"Using vision fallback move: {fallback_move}")
-                    self.execute_text_move(fallback_move)
-                    time.sleep(1)
-                else:
-                    # Last resort: try a random direction
-                    self.controller.press_button(Button.UP)
-                    time.sleep(1)
-            
-            # Wait a bit before next analysis
-            time.sleep(0.5)
-        
-        logger.warning(f"Failed to reach {target_description} within {max_steps} steps")
+                # Check if we've reached the destination
+                check_prompt = f"""
+                Have I reached {target_description} yet?
+                Answer with only YES or NO.
+                """
+                
+                check_response = self._generate_vision_content(check_prompt, self.capture_screen())
+                
+                if "YES" in check_response.upper():
+                    logger.info(f"Successfully navigated to {target_description}")
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"Error during navigation: {e}")
+                
+        logger.warning(f"Failed to navigate to {target_description} in {max_steps} steps")
         return False
-    
-    def determine_next_move(self, analysis: Dict[str, Any], target: str, tile_map: List[List[int]]) -> str:
-        """
-        Determine the next move based on hybrid analysis.
-        
-        Args:
-            analysis: Screen analysis from vision
-            target: Target description
-            tile_map: 2D grid of tile types
-            
-        Returns:
-            str: Direction to move ("up", "down", "left", "right", "a", "b")
-        """
-        # If we're on ice, use specialized ice puzzle logic
-        if any(tile for tile in analysis.get("special_tiles", []) if "ice" in str(tile).lower()):
-            return self.determine_ice_puzzle_move(analysis, target)
-        
-        # If we have "tile_grid" from vision, use that for pathfinding
-        if "tile_grid" in analysis and analysis["tile_grid"]:
-            # Simple greedy pathing toward exits or points of interest
-            if "exits" in analysis and analysis["exits"]:
-                for exit_info in analysis["exits"]:
-                    if target.lower() in str(exit_info).lower():
-                        # Found our target exit, try to path to it
-                        if "position" in exit_info:
-                            exit_pos = exit_info["position"]
-                            # Compare with player position and determine direction
-                            player_pos = analysis.get("player_position", "center")
-                            return self.path_to_position(player_pos, exit_pos)
-        
-        # If we have recommended moves from vision, use the first one
-        if "recommended_moves" in analysis and analysis["recommended_moves"]:
-            return analysis["recommended_moves"][0].lower()
-        
-        # Default to moving toward doors or openings
-        for y, row in enumerate(tile_map):
-            for x, tile in enumerate(row):
-                if tile == TileType.DOOR:
-                    # Found a door, path to it
-                    player_x, player_y = self.player_position
-                    return self.path_to_position((player_x, player_y), (x, y))
-        
-        # No clear direction found
-        return ""
-    
-    def path_to_position(self, start_pos, end_pos) -> str:
-        """
-        Find a direction to move from start to end position.
-        
-        Args:
-            start_pos: (x, y) or description of starting position
-            end_pos: (x, y) or description of ending position
-            
-        Returns:
-            str: Direction ("up", "down", "left", "right")
-        """
-        # Convert text positions to coordinates if needed
-        if isinstance(start_pos, str):
-            # Default to center if we can't parse
-            start_x, start_y = 0, 0
-        else:
-            try:
-                start_x, start_y = start_pos
-            except (ValueError, TypeError):
-                start_x, start_y = 0, 0
-        
-        if isinstance(end_pos, str):
-            # Try to parse direction from text
-            if "up" in end_pos.lower():
-                return "up"
-            elif "down" in end_pos.lower():
-                return "down"
-            elif "left" in end_pos.lower():
-                return "left"
-            elif "right" in end_pos.lower():
-                return "right"
-            else:
-                # Can't determine, return empty
-                return ""
-        else:
-            try:
-                end_x, end_y = end_pos
-            except (ValueError, TypeError):
-                return ""
-            
-            # Simple greedy pathfinding - move in the direction of the largest difference
-            dx = end_x - start_x
-            dy = end_y - start_y
-            
-            if abs(dx) > abs(dy):
-                # Move horizontally
-                return "right" if dx > 0 else "left"
-            else:
-                # Move vertically
-                return "down" if dy > 0 else "up"
-    
-    def execute_move(self, move: str) -> None:
-        """
-        Execute a move by pressing the corresponding button.
-        
-        Args:
-            move: Direction or button to press
-        """
-        direction_mapping = {
-            "up": Button.UP,
-            "down": Button.DOWN,
-            "left": Button.LEFT,
-            "right": Button.RIGHT,
-            "a": Button.A,
-            "b": Button.B,
-            "start": Button.START,
-            "select": Button.SELECT
-        }
-        
-        button = direction_mapping.get(move.lower())
-        if button:
-            self.controller.press_button(button)
-        else:
-            logger.warning(f"Unknown move: {move}")
     
     def execute_text_move(self, move_text: str) -> None:
         """
         Execute a move described in text.
         
         Args:
-            move_text: Text description of the move
+            move_text: Text describing the move (e.g., "go up", "press A")
         """
-        # Check for direction keywords
+        if not move_text or not isinstance(move_text, str):
+            logger.warning(f"Invalid move text: {move_text}")
+            return
+        
+        # Map simple text directions to buttons
         direction_keywords = {
             "up": Button.UP,
             "north": Button.UP,
@@ -724,132 +703,25 @@ class VisionController:
             "select": Button.SELECT
         }
         
+        # Convert the move text to lowercase for easier matching
         move_text = move_text.lower()
+        
+        # First check if the move is just a single button letter (like "a" or "b")
+        if move_text == "a":
+            self.controller.press_button(Button.A)
+            return
+        elif move_text == "b":
+            self.controller.press_button(Button.B)
+            return
+        
+        # Then look for longer texts containing button names
         for keyword, button in direction_keywords.items():
             if keyword in move_text:
                 self.controller.press_button(button)
                 return
         
         logger.warning(f"Couldn't parse move text: {move_text}")
-    
-    def solve_ice_puzzle(self, exit_description: str = "exit") -> bool:
-        """
-        Specifically solve an ice puzzle using a hybrid of memory reading and vision.
-        
-        Args:
-            exit_description: Description of the target exit
-            
-        Returns:
-            bool: True if puzzle was solved
-        """
-        logger.info("Attempting to solve ice puzzle")
-        
-        # First, build a tile map of the ice puzzle
-        tile_map = self.build_tile_map()
-        
-        # Then capture and analyze the screen for additional context
-        self.capture_screen()
-        analysis = self.analyze_screen()
-        
-        # Confirm we're actually on an ice puzzle
-        is_ice_puzzle = False
-        
-        # Check the tile map for ice tiles
-        if tile_map:
-            for row in tile_map:
-                if TileType.ICE in row:
-                    is_ice_puzzle = True
-                    break
-        
-        # Also check vision analysis
-        if not is_ice_puzzle and "special_tiles" in analysis:
-            for tile in analysis["special_tiles"]:
-                if "ice" in str(tile).lower():
-                    is_ice_puzzle = True
-                    break
-        
-        if not is_ice_puzzle:
-            logger.warning("No ice tiles detected in current view")
-            return False
-        
-        # Determine the next move for the ice puzzle
-        next_move = self.determine_ice_puzzle_move(analysis, exit_description)
-        
-        if next_move:
-            logger.info(f"Ice puzzle move: {next_move}")
-            self.execute_move(next_move)
-            time.sleep(2)  # Wait longer for sliding to complete
-            
-            # Check if we reached the exit
-            self.capture_screen()
-            new_analysis = self.analyze_screen()
-            
-            if exit_description.lower() in str(new_analysis).lower():
-                logger.info("Successfully exited the ice puzzle!")
-                return True
-            
-            # Recursively continue solving the puzzle
-            return self.solve_ice_puzzle(exit_description)
-        
-        logger.warning("Couldn't determine move for ice puzzle")
-        return False
-    
-    def determine_ice_puzzle_move(self, analysis: Dict[str, Any], target: str) -> str:
-        """
-        Determine the best move for an ice puzzle.
-        
-        Args:
-            analysis: Screen analysis from vision
-            target: Target description
-            
-        Returns:
-            str: Direction to move ("up", "down", "left", "right")
-        """
-        # Try to use memory and tile map first
-        if self.tile_map:
-            player_x, player_y = self.player_position
-            
-            # Try each direction and see where we'd end up
-            directions = ["up", "down", "left", "right"]
-            for direction in directions:
-                end_x, end_y = self.predict_ice_slide_endpoint(player_x, player_y, direction)
-                
-                # Check if this endpoint gets us closer to the goal
-                if "exits" in analysis:
-                    for exit_info in analysis["exits"]:
-                        if target.lower() in str(exit_info).lower() and "position" in exit_info:
-                            exit_x, exit_y = exit_info["position"]
-                            
-                            # Calculate distances
-                            current_dist = abs(player_x - exit_x) + abs(player_y - exit_y)
-                            new_dist = abs(end_x - exit_x) + abs(end_y - exit_y)
-                            
-                            if new_dist < current_dist:
-                                return direction
-        
-        # If memory approach didn't yield results, fall back to vision
-        ice_puzzle_prompt = """
-        This is a Pokémon ice puzzle where the player slides until hitting a wall or obstacle.
-        1. Identify all ice tiles, walls, and obstacles
-        2. Determine the current player position
-        3. Calculate which direction to press to reach the exit or make progress
-        4. Consider the sliding mechanics - player will slide until hitting something
-        
-        Provide a specific directional instruction (UP, DOWN, LEFT, RIGHT) that will help make progress.
-        """
-        
-        img = Image.open(self.last_screenshot_path)
-        response = self.model.generate_content([ice_puzzle_prompt, img])
-        
-        # Extract the recommended direction
-        direction_text = response.text.strip().lower()
-        
-        for direction in ["up", "down", "left", "right"]:
-            if direction in direction_text:
-                return direction
-        
-        return ""
-    
+  
     def identify_game_objects(self, object_type: str = "all") -> List[Dict[str, Any]]:
         """
         Identify specific types of objects in the current screen.
@@ -901,64 +773,84 @@ class VisionController:
     
     def follow_route(self, route_description: str, max_steps: int = 20) -> bool:
         """
-        Follow a described route using a hybrid of memory reading and vision.
+        Follow a described route using vision guidance.
         
         Args:
-            route_description: Text description of the route to follow
-            max_steps: Maximum number of steps to attempt
+            route_description: Description of the route to follow
+            max_steps: Maximum number of steps to take
             
         Returns:
-            bool: True if reached the destination
+            bool: True if successfully followed the route, False otherwise
         """
         logger.info(f"Following route: {route_description}")
         
         for step in range(max_steps):
-            # First, try to use memory to determine our position and the map
-            map_data = self.read_map_from_memory()
+            logger.info(f"Route following step {step+1}/{max_steps}")
             
-            # Build a tile map (will use vision as fallback if memory reading fails)
-            tile_map = self.build_tile_map()
+            # Capture current state
+            screenshot_path = self.capture_screen()
             
-            # Use vision for additional context and goal-oriented navigation
+            # Ask for the next action
             prompt = f"""
-            Help navigate through this Pokémon game to follow this route:
-            "{route_description}"
+            I need to follow this route: {route_description}
             
-            Observe the current state, determine my position, and provide the NEXT SINGLE ACTION
-            I should take to make progress along this route.
+            Based on the current screenshot, what is the SINGLE NEXT ACTION I should take?
+            Respond with one of:
+            - MOVE UP
+            - MOVE DOWN
+            - MOVE LEFT
+            - MOVE RIGHT
+            - PRESS A
+            - PRESS B
+            - WAIT
+            - DESTINATION REACHED
             
-            Just respond with one of: UP, DOWN, LEFT, RIGHT, A, B
+            Keep your response to ONLY those exact phrases without explanation.
             """
             
-            # Capture screen if we don't have one yet
-            if not self.last_screenshot_path or not os.path.exists(self.last_screenshot_path):
-                self.capture_screen()
-            
-            # Ask vision API for next move
-            img = Image.open(self.last_screenshot_path)
-            response = self.model.generate_content([prompt, img])
-            
-            # Process the guidance
-            action = response.text.strip().upper()
-            logger.info(f"Step {step+1}/{max_steps}: Vision suggests: {action}")
-            
-            # Execute the suggested action
-            self.execute_text_move(action)
-            
-            # Wait for the action to complete
-            time.sleep(1)
-            
-            # Periodically check if we've reached the destination
-            if step % 5 == 0 or "DESTINATION" in action or "ARRIVED" in action:
-                self.capture_screen()
-                status_prompt = f"Have I reached the destination of {route_description}? Answer YES or NO only."
-                img = Image.open(self.last_screenshot_path)
-                status_response = self.model.generate_content([status_prompt, img])
+            try:
+                response_text = self._generate_vision_content(prompt, screenshot_path)
+                action = response_text.strip().upper()
                 
-                if "YES" in status_response.text.upper():
+                logger.info(f"Route action: {action}")
+                
+                if "DESTINATION" in action or "REACHED" in action:
                     logger.info(f"Destination reached: {route_description}")
                     return True
-        
+                    
+                # Execute the action
+                if "MOVE UP" in action:
+                    self.controller.press_button(Button.UP)
+                elif "MOVE DOWN" in action:
+                    self.controller.press_button(Button.DOWN)
+                elif "MOVE LEFT" in action:
+                    self.controller.press_button(Button.LEFT)
+                elif "MOVE RIGHT" in action:
+                    self.controller.press_button(Button.RIGHT)
+                elif "PRESS A" in action:
+                    self.controller.press_button(Button.A)
+                elif "PRESS B" in action:
+                    self.controller.press_button(Button.B)
+                elif "WAIT" in action:
+                    pass
+                
+                # Wait for the action to complete
+                time.sleep(1)
+                
+                # Periodically check if we've reached the destination
+                if step % 5 == 0 or "DESTINATION" in action or "REACHED" in action:
+                    self.capture_screen()
+                    status_prompt = f"Have I reached the destination of {route_description}? Answer YES or NO only."
+                    
+                    status_response = self._generate_vision_content(status_prompt, self.last_screenshot_path)
+                    
+                    if "YES" in status_response.upper():
+                        logger.info(f"Destination reached: {route_description}")
+                        return True
+            
+            except Exception as e:
+                logger.error(f"Error during route following: {e}")
+            
         logger.warning(f"Failed to complete route within {max_steps} steps")
         return False
 

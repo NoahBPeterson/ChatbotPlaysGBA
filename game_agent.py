@@ -22,149 +22,15 @@ import requests
 from mgba_controller import MGBAController, Button
 from vision_controller import VisionController
 
+# Import providers from the new module
+from llm_providers import LLMProvider, OpenAIProvider, AnthropicProvider, GeminiProvider, DeepSeekProvider
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('game_agent')
-
-class LLMProvider:
-    """Base class for LLM providers"""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        
-    def generate_response(self, prompt: str, context: List[Dict[str, str]]) -> str:
-        """
-        Generate a response from the LLM.
-        
-        Args:
-            prompt: The prompt to send to the LLM
-            context: Previous conversation context
-            
-        Returns:
-            str: The LLM's response
-        """
-        raise NotImplementedError("Subclasses must implement generate_response()")
-
-
-class OpenAIProvider(LLMProvider):
-    """OpenAI API provider for LLM interactions"""
-    
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
-        super().__init__(api_key)
-        self.model = model
-        self.api_url = "https://api.openai.com/v1/chat/completions"
-        
-    def generate_response(self, prompt: str, context: List[Dict[str, str]]) -> str:
-        """Generate a response using OpenAI API"""
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
-        # Add the new prompt to the conversation context
-        messages = context.copy()
-        messages.append({"role": "user", "content": prompt})
-        
-        data = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 500
-        }
-        
-        try:
-            response = requests.post(self.api_url, headers=headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.error(f"Error generating OpenAI response: {e}")
-            return "Error generating response. Please check the logs."
-
-
-class AnthropicProvider(LLMProvider):
-    """Anthropic API provider for Claude interactions"""
-    
-    def __init__(self, api_key: str, model: str = "claude-3-opus-20240229"):
-        super().__init__(api_key)
-        self.model = model
-        self.api_url = "https://api.anthropic.com/v1/messages"
-        
-    def generate_response(self, prompt: str, context: List[Dict[str, str]]) -> str:
-        """Generate a response using Anthropic API"""
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01"
-        }
-        
-        # Convert the context format to Anthropic's format
-        system_message = "You are an AI assistant playing a Pokémon game. Analyze the game state and recommend actions."
-        
-        # Extract just the content for the anthropic conversation history
-        history = []
-        for msg in context:
-            if msg["role"] == "user":
-                history.append({"role": "user", "content": msg["content"]})
-            elif msg["role"] == "assistant":
-                history.append({"role": "assistant", "content": msg["content"]})
-        
-        # Add the new prompt
-        messages = history.copy()
-        
-        data = {
-            "model": self.model,
-            "system": system_message,
-            "messages": messages + [{"role": "user", "content": prompt}],
-            "max_tokens": 500
-        }
-        
-        try:
-            response = requests.post(self.api_url, headers=headers, json=data)
-            response.raise_for_status()
-            result = response.json()
-            return result["content"][0]["text"]
-        except Exception as e:
-            logger.error(f"Error generating Anthropic response: {e}")
-            return "Error generating response. Please check the logs."
-
-
-class GeminiProvider(LLMProvider):
-    """Google Gemini API provider for LLM interactions"""
-    
-    def __init__(self, api_key: str, model: str = "gemini-1.5-pro"):
-        super().__init__(api_key)
-        self.model = model
-        
-        # Import here to avoid dependency if not using Gemini
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        self.genai = genai
-        self.genai_model = genai.GenerativeModel(self.model)
-        
-    def generate_response(self, prompt: str, context: List[Dict[str, str]]) -> str:
-        """Generate a response using Google Gemini API"""
-        try:
-            # Convert context to Google's format
-            chat = self.genai_model.start_chat(history=[])
-            
-            # Add previous messages to chat history
-            for msg in context:
-                if msg["role"] == "user":
-                    chat.history.append({"role": "user", "parts": [msg["content"]]})
-                elif msg["role"] == "assistant":
-                    chat.history.append({"role": "model", "parts": [msg["content"]]})
-            
-            # Send the new prompt
-            response = chat.send_message(prompt)
-            return response.text
-        except Exception as e:
-            logger.error(f"Error generating Gemini response: {e}")
-            return "Error generating response. Please check the logs."
-
 
 class GameAgent:
     """
@@ -182,8 +48,8 @@ class GameAgent:
         llm_provider: str = "openai",
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        mgba_controller: Optional[MGBAController] = None,
         vision_controller: Optional[VisionController] = None,
+        mgba_controller: Optional[MGBAController] = None,
         history_length: int = 10,
         screenshot_dir: str = "agent_screenshots",
         session_log_file: Optional[str] = None
@@ -192,56 +58,40 @@ class GameAgent:
         Initialize the GameAgent.
         
         Args:
-            llm_provider: The LLM provider to use ("openai", "anthropic", or "gemini")
-            api_key: API key for the LLM provider (or None to use environment variables)
-            model: Model name to use with the provider (or None for default)
-            mgba_controller: MGBAController instance (or None to create a new one)
+            llm_provider: Provider to use ("openai", "anthropic", "gemini")
+            api_key: API key for the LLM provider
+            model: LLM model to use (or None for provider default)
             vision_controller: VisionController instance (or None to create a new one)
+            mgba_controller: MGBAController instance (or None to create a new one)
             history_length: Number of conversation exchanges to keep for context
             screenshot_dir: Directory to save screenshots in
             session_log_file: Path to log file (or None for default)
         """
-        # Load API keys from environment if not provided
-        load_dotenv()
-        self.api_key = api_key or self._get_api_key_for_provider(llm_provider)
+        # Load environment variables if not provided
+        if api_key is None:
+            load_dotenv()
         
-        # Initialize the LLM provider
+        # Set up the LLM provider
         self.llm_provider_name = llm_provider.lower()
+        self.api_key = api_key or self._get_api_key_for_provider(self.llm_provider_name)
         self.llm = self._create_llm_provider(self.llm_provider_name, self.api_key, model)
         
         # Initialize controllers
         self.mgba_controller = mgba_controller or MGBAController()
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        
+        # Store the game title
+        self.game_title = self.mgba_controller.game_title
+        
+        # Get provider-specific API key for vision
+        vision_api_key = self._get_api_key_for_provider(self.llm_provider_name)
+        
+        # Initialize vision controller with the same provider when possible
+        # Note: Some providers might not support vision, in which case we'll fall back to Gemini
         self.vision_controller = vision_controller or VisionController(
-            api_key=gemini_api_key,
+            api_key=vision_api_key,
+            provider_name=self.llm_provider_name,  # Pass the same provider name
             mgba_controller=self.mgba_controller
         )
-        
-        # Set up conversation history
-        self.history_length = history_length
-        self.conversation_history = []
-        
-        # Set up screenshot directory
-        self.screenshot_dir = screenshot_dir
-        os.makedirs(screenshot_dir, exist_ok=True)
-        
-        # Set up session logging
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if session_log_file is None:
-            os.makedirs("logs", exist_ok=True)
-            self.session_log_file = f"logs/agent_session_{self.session_id}.json"
-        else:
-            self.session_log_file = session_log_file
-            
-        # Initialize session log
-        self.session_log = {
-            "session_id": self.session_id,
-            "start_time": datetime.now().isoformat(),
-            "game_title": self.mgba_controller.game_title,
-            "game_code": self.mgba_controller.game_code,
-            "llm_provider": llm_provider,
-            "interactions": []
-        }
         
         # Dictionary of available commands the LLM can use
         self.available_commands = {
@@ -255,142 +105,161 @@ class GameAgent:
             "solve_puzzle": self._execute_solve_puzzle
         }
         
-        logger.info(f"GameAgent initialized for {self.mgba_controller.game_title} ({self.mgba_controller.game_code})")
+        # Session information
+        self.conversation_history = []
+        self.session_log = {
+            "start_time": datetime.now().isoformat(),
+            "game_title": self.game_title,
+            "llm_provider": self.llm_provider_name,
+            "interactions": []
+        }
+        self.log_file = None
+        
+        # Set up the conversation history with a maximum length
+        self.history_length = history_length
+        
+        # Ensure the screenshot directory exists
+        self.screenshot_dir = screenshot_dir
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        
+        # Set up logging
+        if session_log_file is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            os.makedirs("logs", exist_ok=True)
+            self.log_file = f"logs/agent_session_{timestamp}.json"
+        else:
+            self.log_file = session_log_file
+        
+        logger.info(f"GameAgent initialized for {self.game_title}")
         logger.info(f"Using LLM provider: {llm_provider}")
     
-    def _get_api_key_for_provider(self, provider: str) -> str:
-        """Get the API key for the specified provider from environment variables"""
-        if provider.lower() == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-        elif provider.lower() == "anthropic":
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-        elif provider.lower() == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
+    def _get_api_key_for_provider(self, provider_name: str) -> str:
+        """Get the appropriate API key for the specified provider."""
+        if provider_name == "openai":
+            return os.getenv("OPENAI_API_KEY", "")
+        elif provider_name == "anthropic":
+            return os.getenv("ANTHROPIC_API_KEY", "")
+        elif provider_name == "gemini":
+            return os.getenv("GEMINI_API_KEY", "")
+        elif provider_name == "deepseek":
+            return os.getenv("DEEPSEEK_API_KEY", "")
         else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
-            
-        if not api_key:
-            raise ValueError(f"API key for {provider} not found in environment variables")
-            
-        return api_key
+            raise ValueError(f"Unsupported provider: {provider_name}")
     
     def _create_llm_provider(self, provider: str, api_key: str, model: Optional[str]) -> LLMProvider:
         """Create the appropriate LLM provider instance"""
         if provider == "openai":
-            return OpenAIProvider(api_key, model or "gpt-4o")
+            return OpenAIProvider(api_key, model or "gpt-4o-mini")
         elif provider == "anthropic":
-            return AnthropicProvider(api_key, model or "claude-3-opus-20240229")
+            return AnthropicProvider(api_key, model or "claude-3-7-sonnet-20250219")
         elif provider == "gemini":
-            return GeminiProvider(api_key, model or "gemini-1.5-pro")
+            return GeminiProvider(api_key, model or "gemini-1.5-pro-latest")
+        elif provider == "deepseek":
+            return DeepSeekProvider(api_key, model or "deepseek-chat")
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
     
     def _capture_game_state(self) -> Dict[str, Any]:
         """
-        Capture the current game state from screenshots and memory.
+        Capture the current game state using vision and memory.
         
         Returns:
-            Dict with game state information
+            Dict: Game state information
         """
-        # Generate a timestamped filename for the screenshot
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        screenshot_filename = f"{self.screenshot_dir}/screenshot_{timestamp}.png"
-        
-        # Capture screenshot
-        screenshot_path = self.vision_controller.capture_screen(screenshot_filename)
-        
-        # Analyze the screenshot with vision
-        vision_analysis = self.vision_controller.analyze_screen(screenshot_path)
-        
-        # Get memory-based game state
-        memory_state = self.vision_controller.read_map_from_memory()
-        
-        # Try to build a tile map
-        try:
-            tile_map = self.vision_controller.build_tile_map()
-        except Exception as e:
-            logger.warning(f"Failed to build tile map: {e}")
-            tile_map = []
-        
-        # Combine all the data into a game state dictionary
-        game_state = {
-            "screenshot_path": screenshot_path,
-            "timestamp": timestamp,
-            "vision_analysis": vision_analysis,
-            "memory_state": memory_state,
-            "tile_map": tile_map,
-            "game_title": self.mgba_controller.game_title,
-            "game_code": self.mgba_controller.game_code
+        state = {
+            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "game_title": self.game_title
         }
         
-        return game_state
+        # Capture and save a screenshot for this step
+        screenshot_path = os.path.join(
+            self.screenshot_dir,
+            f"screenshot_{state['timestamp']}.png"
+        )
+        os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+        screenshot_path = self.vision_controller.capture_screen(screenshot_path)
+        
+        # Get vision analysis
+        analysis = self.vision_controller.analyze_screen(screenshot_path)
+        state["analysis"] = analysis
+        
+        # Extract key information from analysis
+        state["location"] = analysis.get("description", "")[:50] + "..." if analysis.get("description") else "Unknown"
+        state["location_type"] = analysis.get("location_type", "unknown")
+        state["player_position"] = analysis.get("player_position", (0, 0))
+        state["map_id"] = analysis.get("map_id", 0)
+        
+        # Add memory information
+        memory_data = self.vision_controller.read_map_from_memory()
+        if memory_data:
+            state["map_id"] = memory_data.get("map_id", state["map_id"])
+            state["player_position_memory"] = memory_data.get("player_position", state["player_position"])
+        
+        return state
     
     def _format_prompt(self, game_state: Dict[str, Any]) -> str:
         """
-        Format a prompt for the LLM based on the game state.
+        Format a prompt for the LLM based on the current game state.
         
         Args:
-            game_state: The current game state
+            game_state: Current game state
             
         Returns:
-            Formatted prompt string
+            Formatted prompt
         """
-        prompt = [
-            f"# Game State Analysis - {game_state['game_title']} ({game_state['game_code']})",
-            f"Timestamp: {game_state['timestamp']}",
-            "",
-            "## Vision Analysis"
-        ]
+        location = game_state.get("location", "Unknown")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        vision = game_state.get("vision_analysis", {})
-        if vision:
-            prompt.extend([
-                f"- Location: {vision.get('location', 'Unknown')}",
-                f"- Player Position: {vision.get('player_position', 'Unknown')}"
-            ])
-            
-            if "recommended_moves" in vision and vision["recommended_moves"]:
-                prompt.append("- Suggested Moves:")
-                for move in vision["recommended_moves"]:
-                    prompt.append(f"  - {move}")
-                    
-            if "objects" in vision and vision["objects"]:
-                prompt.append("- Objects:")
-                for obj in vision["objects"][:5]:  # Limit to 5 objects to keep prompt concise
-                    prompt.append(f"  - {obj}")
+        # Get location type from analysis if available
+        location_type = "unknown"
+        if "analysis" in game_state and "location_type" in game_state["analysis"]:
+            location_type = game_state["analysis"]["location_type"]
         
-        prompt.extend(["", "## Memory State"])
-        memory = game_state.get("memory_state", {})
-        if memory:
-            prompt.extend([
-                f"- Map ID: {memory.get('map_id', 'Unknown')}",
-                f"- Player Position (Memory): {memory.get('player_position', 'Unknown')}"
-            ])
+        # Build the prompt
+        prompt = f"# Game State Analysis - {self.game_title}\n"
+        prompt += f"Timestamp: {timestamp}\n\n"
         
-        prompt.extend([
-            "",
-            "## Available Commands",
-            "- press_button: Press a button (A, B, START, SELECT, UP, DOWN, LEFT, RIGHT, L, R)",
-            "- press_sequence: Press a sequence of buttons in order",
-            "- hold_button: Hold a button down",
-            "- release_button: Release a held button",
-            "- wait: Wait for a specified number of seconds",
-            "- read_memory: Read a value from memory",
-            "- navigate_to: Navigate to a specific location",
-            "- solve_puzzle: Try to solve a puzzle like an ice puzzle",
-            "",
-            "## Instructions",
-            "1. Analyze the game state above",
-            "2. Decide on the next action(s) to progress in the game",
-            "3. Respond with one or more commands in EXACTLY this format: press_button:BUTTON",
-            "   - Example: press_button:A or press_sequence:UP,RIGHT,A",
-            "   - DO NOT add any extra formatting like asterisks or COMMAND: prefix",
-            "4. Include your reasoning for these actions",
-            "",
-            "What should I do next?"
-        ])
+        # Vision analysis section
+        prompt += f"## Vision Analysis\n"
+        prompt += f"- Location: {location}\n"
+        if "player_position" in game_state:
+            prompt += f"- Player Position: {game_state['player_position']}\n"
         
-        return "\n".join(prompt)
+        # Memory state section
+        prompt += f"\n## Memory State\n"
+        if "map_id" in game_state:
+            prompt += f"- Map ID: {game_state['map_id']}\n"
+        if "player_position_memory" in game_state:
+            prompt += f"- Player Position (Memory): {game_state['player_position_memory']}\n"
+        
+        # Available commands section
+        prompt += f"\n## Available Commands\n"
+        prompt += f"- press_button: Press a button (A, B, START, SELECT, UP, DOWN, LEFT, RIGHT, L, R)\n"
+        prompt += f"- press_sequence: Press a sequence of buttons in order\n"
+        prompt += f"- hold_button: Hold a button down\n"
+        prompt += f"- release_button: Release a held button\n"
+        prompt += f"- wait: Wait for a specified number of seconds\n"
+        prompt += f"- read_memory: Read a value from memory\n"
+        prompt += f"- navigate_to: Navigate to a specific location\n"
+        prompt += f"- solve_puzzle: Try to solve a puzzle like an ice puzzle\n"
+        
+        # Instructions section
+        prompt += f"\n## Instructions\n"
+        prompt += f"1. Analyze the game state above\n"
+        prompt += f"2. Decide on the next action(s) to progress in the game\n"
+        
+        # Special instructions for title screen
+        if location_type == "title_screen":
+            prompt += f"3. YOU ARE AT THE TITLE SCREEN. Press START or A to begin the game!\n"
+        
+        prompt += f"3. Respond with one or more commands in EXACTLY this format: press_button:BUTTON\n"
+        prompt += f"   - Example: press_button:A or press_sequence:UP,RIGHT,A\n"
+        prompt += f"   - DO NOT add any extra formatting like asterisks or COMMAND: prefix\n"
+        prompt += f"4. Include your reasoning for these actions\n\n"
+        
+        prompt += f"What should I do next?"
+        
+        return prompt
     
     def _parse_llm_response(self, response: str) -> List[Dict[str, str]]:
         """
@@ -626,24 +495,46 @@ class GameAgent:
             self.conversation_history.pop(0)
     
     def _log_interaction(self, game_state: Dict[str, Any], prompt: str, response: str, commands: List[Dict[str, str]], results: List[Dict[str, str]]) -> None:
-        """Log the interaction to the session log file"""
+        """
+        Log an interaction to the session log.
+        
+        Args:
+            game_state: Game state at the time of the interaction
+            prompt: Prompt sent to the LLM
+            response: Response from the LLM
+            commands: Commands extracted from the response
+            results: Results of executing the commands
+        """
+        # Initialize session_log if it's not a dictionary
+        if not isinstance(self.session_log, dict):
+            self.session_log = {
+                "start_time": datetime.now().isoformat(),
+                "game_title": self.game_title,
+                "llm_provider": self.llm_provider_name,
+                "interactions": []
+            }
+        
+        # Ensure interactions list exists
+        if "interactions" not in self.session_log:
+            self.session_log["interactions"] = []
+        
+        # Create the interaction log
         interaction = {
             "timestamp": datetime.now().isoformat(),
-            "game_state": {
-                "location": game_state.get("vision_analysis", {}).get("location", "Unknown"),
-                "map_id": game_state.get("memory_state", {}).get("map_id", "Unknown"),
-                "screenshot_path": game_state.get("screenshot_path", "Unknown")
-            },
             "prompt": prompt,
             "llm_response": response,
             "commands": commands,
-            "results": results
+            "results": results,
+            "location": game_state.get("location", "Unknown"),
+            "location_type": game_state.get("location_type", "unknown"),
+            "map_id": game_state.get("map_id", 0)
         }
         
+        # Add to session log
         self.session_log["interactions"].append(interaction)
         
         # Write the updated log to file
-        with open(self.session_log_file, 'w') as f:
+        with open(self.log_file, 'w') as f:
             json.dump(self.session_log, f, indent=2)
     
     def run_single_step(self) -> Dict[str, Any]:
@@ -685,10 +576,10 @@ class GameAgent:
     
     def run_loop(self, steps: int = 0, max_errors: int = 3, delay: float = 1.0) -> None:
         """
-        Run the thinking and playing loop continuously or for a specific number of steps.
+        Run the game agent in a continuous loop.
         
         Args:
-            steps: Number of steps to run (0 for infinite loop)
+            steps: Number of steps to run (0 for infinite)
             max_errors: Maximum number of consecutive errors before stopping
             delay: Delay between steps in seconds
         """
@@ -697,49 +588,34 @@ class GameAgent:
         
         try:
             while steps == 0 or step_count < steps:
+                logger.info(f"Running step {step_count+1}/{steps if steps > 0 else 'inf'}")
+                
                 try:
-                    logger.info(f"Running step {step_count + 1}" + ("" if steps == 0 else f"/{steps}"))
-                    
-                    # Run a single step
-                    interaction = self.run_single_step()
-                    
-                    # Log key information
-                    location = interaction["game_state"].get("vision_analysis", {}).get("location", "Unknown")
-                    cmd_count = len(interaction["commands"])
-                    logger.info(f"Location: {location} | Commands: {cmd_count}")
-                    
-                    # Reset error count on success
-                    error_count = 0
-                    
-                    # Increment step count
+                    self.run_single_step()
                     step_count += 1
-                    
-                    # Delay before next step
-                    if delay > 0:
-                        time.sleep(delay)
-                        
-                except KeyboardInterrupt:
-                    logger.info("Loop interrupted by user")
-                    break
+                    error_count = 0  # Reset error count after successful step
                 except Exception as e:
-                    logger.error(f"Error in step {step_count + 1}: {e}")
                     error_count += 1
+                    logger.error(f"Error in step {step_count+1}: {e}")
                     
                     if error_count >= max_errors:
-                        logger.error(f"Stopping loop after {max_errors} consecutive errors")
+                        logger.error(f"Stopping loop after {error_count} consecutive errors")
                         break
-                        
-                    # Delay after error
-                    time.sleep(delay * 2)  # Longer delay after error
+                
+                # Wait between steps
+                if steps == 0 or step_count < steps:
+                    time.sleep(delay)
+        
         finally:
-            # Save final log
-            self.session_log["end_time"] = datetime.now().isoformat()
-            self.session_log["steps_completed"] = step_count
-            with open(self.session_log_file, 'w') as f:
-                json.dump(self.session_log, f, indent=2)
+            # Make sure we always save the session log
+            if isinstance(self.session_log, dict):
+                self.session_log["end_time"] = datetime.now().isoformat()
+                self.session_log["steps_completed"] = step_count
+                with open(self.log_file, 'w') as f:
+                    json.dump(self.session_log, f, indent=2)
                 
             logger.info(f"Session ended after {step_count} steps")
-            logger.info(f"Session log saved to {self.session_log_file}")
+            logger.info(f"Session log saved to {self.log_file}")
 
 
 def main():
@@ -747,7 +623,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Run an AI agent to play Pokémon games")
-    parser.add_argument("--provider", choices=["openai", "anthropic", "gemini"], default="openai",
+    parser.add_argument("--provider", choices=["openai", "anthropic", "gemini", "deepseek"], default="openai",
                       help="LLM provider to use")
     parser.add_argument("--api-key", help="API key for the LLM provider")
     parser.add_argument("--model", help="Model name to use with the provider")
@@ -756,6 +632,20 @@ def main():
     parser.add_argument("--delay", type=float, default=1.0,
                       help="Delay between steps in seconds")
     parser.add_argument("--log-file", help="Path to log file")
+    
+    # Add information about available models
+    model_help = """
+    Available models by provider:
+      - openai: gpt-4o-mini (default, faster), gpt-4o (more capable)
+      - anthropic: claude-3-7-sonnet-20250219 (default), claude-3-5-sonnet-20240620
+      - gemini: gemini-1.5-flash (faster), gemini-1.5-pro (more capable)
+      - deepseek: deepseek-chat (default)
+    
+    Note: Claude 3.7 Sonnet has extended thinking capabilities, which is useful for
+    complex game situations but uses more tokens.
+    """
+    
+    print(model_help)
     
     args = parser.parse_args()
     
@@ -771,13 +661,10 @@ def main():
         # Run the loop
         agent.run_loop(steps=args.steps, delay=args.delay)
         
-    except KeyboardInterrupt:
-        print("\nStopped by user")
+        return 0
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
         return 1
-        
-    return 0
 
 
 if __name__ == "__main__":
