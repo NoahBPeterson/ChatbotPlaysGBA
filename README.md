@@ -162,10 +162,44 @@ vision_controller.solve_ice_puzzle()
 
 See [VISION_NAVIGATION.md](VISION_NAVIGATION.md) for detailed information about the vision-based navigation system.
 
+### AI Game Agent
+
+The GameAgent provides an LLM-powered thinking and playing loop for Pokémon games:
+
+```python
+from game_agent import GameAgent
+from dotenv import load_dotenv
+
+# Load API keys from .env file
+load_dotenv()
+
+# Initialize with preferred LLM provider (openai, anthropic, or gemini)
+agent = GameAgent(llm_provider="gemini")
+
+# Run for a specific number of steps
+agent.run_loop(steps=10)
+
+# Or run indefinitely
+# agent.run_loop()
+```
+
+Run the test script to try it out:
+
+```bash
+# Using the Gemini provider (key from .env file)
+./test_game_agent.py
+
+# Or specify a different provider
+./test_game_agent.py --provider openai --steps 5
+```
+
+See [GAME_AGENT.md](GAME_AGENT.md) for detailed information about the AI-powered game agent system.
+
 ## Project Structure
 
 - **mgba_controller.py**: Main controller class for interfacing with mGBA-http
 - **vision_controller.py**: Enhanced controller with computer vision capabilities
+- **game_agent.py**: AI-powered agent that plays the game through LLM thinking
 - **mGBA-http/**: Submodule containing the C# HTTP server for mGBA
 - **setup.sh**: Script for setting up the project
 - **run.sh**: Script for running the mGBA emulator and HTTP server
@@ -173,6 +207,9 @@ See [VISION_NAVIGATION.md](VISION_NAVIGATION.md) for detailed information about 
 - **test_button_controls.py**: Test script for button control functionality
 - **example_movement.py**: Example script for character movement
 - **solve_ice_puzzle.py**: Script for solving ice puzzles with computer vision
+- **test_game_agent.py**: Test script for the AI game agent
+- **VISION_NAVIGATION.md**: Documentation for the vision-based navigation system
+- **GAME_AGENT.md**: Documentation for the AI-powered game agent system
 
 ## Pokémon Game Support
 

@@ -49,3 +49,4 @@ Pokemon Emerald (U).gba
 .env
 
 *.png
+logs/*
