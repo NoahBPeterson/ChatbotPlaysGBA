@@ -1,0 +1,3 @@
+[submodule "mGBA-http"]
+	path = mGBA-http
+	url = https://github.com/nikouu/mGBA-http.git
