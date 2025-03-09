@@ -50,6 +50,10 @@ To start the mGBA emulator and the HTTP server:
 
 Where `[ROM_FILE]` is the path to your ROM file (optional).
 
+### Cross-Platform Notes
+
+The mGBA-http server is built using .NET, which is cross-platform. When running on macOS, you might notice that the compiled DLL files appear to be in Windows PE format. This is normal for .NET assemblies, as the actual execution is handled by the platform-specific .NET runtime. The server will run properly on macOS, Windows, or Linux as long as the appropriate .NET runtime is installed.
+
 ## Components
 
 - **MGBAController**: A high-level controller class for the mGBA-http API

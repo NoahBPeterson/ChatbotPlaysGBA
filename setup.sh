@@ -66,9 +66,11 @@ echo -e "${GREEN}Submodules initialized and updated!${NC}"
 
 # Build mGBA-http with dotnet
 echo -e "${YELLOW}Building mGBA-http with dotnet...${NC}"
-cd mGBA-http
-dotnet build
-cd ..
+echo -e "${YELLOW}Note: .NET assemblies will be built in a cross-platform format${NC}"
+echo -e "${YELLOW}      that will work on macOS, Windows, and Linux.${NC}"
+cd mGBA-http/src
+dotnet build --configuration Release
+cd ../..
 echo -e "${GREEN}mGBA-http built successfully!${NC}"
 
 # Set up Python virtual environment and install dependencies with uv
