@@ -32,6 +32,10 @@ def parse_arguments():
     parser.add_argument("--delay", type=float, default=2.0, 
                         help="Delay between steps in seconds")
     parser.add_argument("--api-key", help="API key for the LLM provider")
+    parser.add_argument("--adaptive-models", action="store_true", default=True,
+                        help="Automatically switch to more powerful models when stuck (default: True)")
+    parser.add_argument("--no-adaptive-models", action="store_false", dest="adaptive_models",
+                        help="Disable automatic switching to more powerful models")
     
     return parser.parse_args()
 
@@ -47,6 +51,10 @@ def main():
     
     # Print initialization message
     print(f"Initializing GameAgent with {args.provider} provider...")
+    if args.adaptive_models:
+        print("Adaptive model selection is enabled - will switch to more powerful models if no progress is detected")
+    else:
+        print("Adaptive model selection is disabled - will use the specified model only")
     
     # Initialize and run the GameAgent
     agent = GameAgent(
@@ -54,7 +62,8 @@ def main():
         api_key=api_key,
         model=args.model,
         screenshot_dir="test_screenshots",
-        session_log_file=f"logs/agent_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        session_log_file=f"logs/agent_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        adaptive_models=args.adaptive_models
     )
     
     print(f"Running GameAgent for {args.steps} steps with {args.delay}s delay...")

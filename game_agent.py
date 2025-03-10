@@ -52,13 +52,14 @@ class GameAgent:
         mgba_controller: Optional[MGBAController] = None,
         history_length: int = 10,
         screenshot_dir: str = "agent_screenshots",
-        session_log_file: Optional[str] = None
+        session_log_file: Optional[str] = None,
+        adaptive_models: bool = True
     ):
         """
         Initialize the GameAgent.
         
         Args:
-            llm_provider: Provider to use ("openai", "anthropic", "gemini")
+            llm_provider: Provider to use ("openai", "anthropic", "gemini", "deepseek")
             api_key: API key for the LLM provider
             model: LLM model to use (or None for provider default)
             vision_controller: VisionController instance (or None to create a new one)
@@ -66,6 +67,7 @@ class GameAgent:
             history_length: Number of conversation exchanges to keep for context
             screenshot_dir: Directory to save screenshots in
             session_log_file: Path to log file (or None for default)
+            adaptive_models: Whether to automatically switch to more powerful models when no progress is detected
         """
         # Load environment variables if not provided
         if api_key is None:
@@ -74,12 +76,41 @@ class GameAgent:
         # Set up the LLM provider
         self.llm_provider_name = llm_provider.lower()
         self.api_key = api_key or self._get_api_key_for_provider(self.llm_provider_name)
-        self.llm = self._create_llm_provider(self.llm_provider_name, self.api_key, model)
         
-        # Initialize controllers
-        self.mgba_controller = mgba_controller or MGBAController()
+        # Save the original model choice for potential model switching
+        self.original_model = model
+        self.current_model = model
+        self.adaptive_models = adaptive_models
+        
+        # Map of standard and fallback models for each provider
+        self.model_tiers = {
+            "openai": {
+                "standard": "gpt-4o-mini",
+                "fallback": "gpt-4o"
+            },
+            "anthropic": {
+                "standard": "claude-3-haiku-20240307",
+                "fallback": "claude-3-7-sonnet-20250219"
+            },
+            "gemini": {
+                "standard": "gemini-1.5-flash",
+                "fallback": "gemini-1.5-pro"
+            },
+            "deepseek": {
+                "standard": "deepseek-chat",
+                "fallback": "deepseek-chat"  # Currently only one model available
+            }
+        }
+        
+        # If no model was specified, use the standard model
+        if self.current_model is None:
+            self.current_model = self.model_tiers[self.llm_provider_name]["standard"]
+        
+        # Initialize the LLM provider with the current model
+        self.llm = self._create_llm_provider(self.llm_provider_name, self.api_key, self.current_model)
         
         # Store the game title
+        self.mgba_controller = mgba_controller or MGBAController()
         self.game_title = self.mgba_controller.game_title
         
         # Get provider-specific API key for vision
@@ -130,8 +161,15 @@ class GameAgent:
         else:
             self.log_file = session_log_file
         
+        # Tracking game progress
+        self.previous_positions = []
+        self.no_progress_count = 0
+        self.using_fallback_model = False
+        
         logger.info(f"GameAgent initialized for {self.game_title}")
-        logger.info(f"Using LLM provider: {llm_provider}")
+        logger.info(f"Using LLM provider: {self.llm_provider_name} with model: {self.current_model}")
+        if self.adaptive_models:
+            logger.info(f"Adaptive model selection is enabled (will switch to {self.model_tiers[self.llm_provider_name]['fallback']} if no progress detected)")
     
     def _get_api_key_for_provider(self, provider_name: str) -> str:
         """Get the appropriate API key for the specified provider."""
@@ -215,9 +253,21 @@ class GameAgent:
         if "analysis" in game_state and "location_type" in game_state["analysis"]:
             location_type = game_state["analysis"]["location_type"]
         
+        # Check if this is likely a title screen based on various indicators
+        is_title_screen = False
+        if location_type == "title_screen":
+            is_title_screen = True
+        elif any(term in str(location).lower() for term in ["title screen", "main menu", "press start", "game freak"]):
+            is_title_screen = True
+            location_type = "title_screen"
+        
         # Build the prompt
         prompt = f"# Game State Analysis - {self.game_title}\n"
         prompt += f"Timestamp: {timestamp}\n\n"
+        
+        # Special title screen banner if detected
+        if is_title_screen:
+            prompt += f"⭐️ TITLE SCREEN DETECTED: Press START to begin the game! ⭐️\n\n"
         
         # Vision analysis section
         prompt += f"## Vision Analysis\n"
@@ -245,17 +295,22 @@ class GameAgent:
         
         # Instructions section
         prompt += f"\n## Instructions\n"
-        prompt += f"1. Analyze the game state above\n"
-        prompt += f"2. Decide on the next action(s) to progress in the game\n"
         
         # Special instructions for title screen
-        if location_type == "title_screen":
-            prompt += f"3. YOU ARE AT THE TITLE SCREEN. Press START or A to begin the game!\n"
-        
-        prompt += f"3. Respond with one or more commands in EXACTLY this format: press_button:BUTTON\n"
-        prompt += f"   - Example: press_button:A or press_sequence:UP,RIGHT,A\n"
-        prompt += f"   - DO NOT add any extra formatting like asterisks or COMMAND: prefix\n"
-        prompt += f"4. Include your reasoning for these actions\n\n"
+        if is_title_screen:
+            prompt += f"1. YOU ARE AT THE TITLE SCREEN. Press START to begin the game.\n"
+            prompt += f"2. If START doesn't work, try pressing A instead.\n"
+            prompt += f"3. The correct command format is: press_button:START\n\n"
+        else:
+            prompt += f"1. Analyze the game state above\n"
+            prompt += f"2. Decide on the next action(s) to progress in the game\n"
+            prompt += f"3. Respond with one or more commands in EXACTLY this format: press_button:BUTTON\n"
+            prompt += f"   - Example: press_button:A or press_sequence:UP,RIGHT,A\n"
+            prompt += f"   - DO NOT add any extra formatting like asterisks or COMMAND: prefix\n"
+            prompt += f"4. Include your reasoning for these actions\n\n"
+            
+            # Add general title screen guidance
+            prompt += f"Note: If you see a title screen or main menu, use press_button:START to begin the game.\n\n"
         
         prompt += f"What should I do next?"
         
@@ -547,6 +602,10 @@ class GameAgent:
         # Capture game state
         game_state = self._capture_game_state()
         
+        # Track player position to detect when we're stuck
+        if "player_position" in game_state:
+            self._track_progress(game_state["player_position"])
+        
         # Format prompt for LLM
         prompt = self._format_prompt(game_state)
         
@@ -564,6 +623,16 @@ class GameAgent:
         
         # Log the interaction
         self._log_interaction(game_state, prompt, llm_response, commands, results)
+        
+        # If we've recently switched models, log it in the results
+        if self.using_fallback_model:
+            model_info = {
+                "command": "system_info", 
+                "params": f"model_switch", 
+                "result": f"Using more powerful model ({self.current_model}) for better reasoning",
+                "success": True
+            }
+            results.append(model_info)
         
         # Return details of the interaction
         return {
@@ -617,6 +686,64 @@ class GameAgent:
             logger.info(f"Session ended after {step_count} steps")
             logger.info(f"Session log saved to {self.log_file}")
 
+    def _switch_to_fallback_model(self):
+        """
+        Switch from the standard model to the more powerful fallback model.
+        """
+        if not self.adaptive_models or self.using_fallback_model:
+            return False
+        
+        fallback_model = self.model_tiers[self.llm_provider_name]["fallback"]
+        if self.current_model == fallback_model:
+            return False
+        
+        logger.info(f"No progress detected for {self.no_progress_count} steps. Switching from {self.current_model} to {fallback_model}")
+        
+        # Create a new LLM provider with the fallback model
+        self.current_model = fallback_model
+        self.llm = self._create_llm_provider(self.llm_provider_name, self.api_key, self.current_model)
+        self.using_fallback_model = True
+        
+        # Add a note to the conversation history
+        self.conversation_history.append({
+            "role": "system",
+            "content": f"The agent has automatically switched to a more powerful model ({fallback_model}) because no progress was detected."
+        })
+        
+        return True
+
+    def _track_progress(self, current_position):
+        """
+        Track the player's position to detect when no progress is being made.
+        
+        Returns True if progress has been made, False otherwise.
+        """
+        # Add current position to history (limit to last 5 positions)
+        self.previous_positions.append(current_position)
+        if len(self.previous_positions) > 5:
+            self.previous_positions.pop(0)
+        
+        # Not enough history to determine if we're stuck
+        if len(self.previous_positions) < 3:
+            return True
+        
+        # Check if we've been in the same position for the last 3 steps
+        if all(pos == current_position for pos in self.previous_positions[-3:]):
+            self.no_progress_count += 1
+            logger.warning(f"No movement detected for {self.no_progress_count} consecutive checks")
+            
+            # If we've been stuck for 5 steps and we're not using the fallback model yet, switch models
+            if self.no_progress_count >= 5 and not self.using_fallback_model and self.adaptive_models:
+                self._switch_to_fallback_model()
+            
+            return False
+        else:
+            # Progress detected, reset counter
+            if self.no_progress_count > 0:
+                logger.info(f"Progress detected! Reset no-progress counter from {self.no_progress_count} to 0")
+                self.no_progress_count = 0
+            return True
+
 
 def main():
     """Main function to run the GameAgent"""
@@ -624,25 +751,30 @@ def main():
     
     parser = argparse.ArgumentParser(description="Run an AI agent to play Pokémon games")
     parser.add_argument("--provider", choices=["openai", "anthropic", "gemini", "deepseek"], default="openai",
-                      help="LLM provider to use")
+                       help="LLM provider to use")
     parser.add_argument("--api-key", help="API key for the LLM provider")
     parser.add_argument("--model", help="Model name to use with the provider")
     parser.add_argument("--steps", type=int, default=0, 
-                      help="Number of steps to run (0 for infinite)")
+                       help="Number of steps to run (0 for infinite)")
     parser.add_argument("--delay", type=float, default=1.0,
-                      help="Delay between steps in seconds")
+                       help="Delay between steps in seconds")
     parser.add_argument("--log-file", help="Path to log file")
+    parser.add_argument("--adaptive-models", action="store_true", default=True,
+                       help="Automatically switch to more powerful models when stuck (default: True)")
+    parser.add_argument("--no-adaptive-models", action="store_false", dest="adaptive_models",
+                       help="Disable automatic switching to more powerful models")
     
     # Add information about available models
     model_help = """
     Available models by provider:
       - openai: gpt-4o-mini (default, faster), gpt-4o (more capable)
-      - anthropic: claude-3-7-sonnet-20250219 (default), claude-3-5-sonnet-20240620
+      - anthropic: claude-3-haiku-20240307 (default), claude-3-7-sonnet-20250219
       - gemini: gemini-1.5-flash (faster), gemini-1.5-pro (more capable)
       - deepseek: deepseek-chat (default)
     
-    Note: Claude 3.7 Sonnet has extended thinking capabilities, which is useful for
-    complex game situations but uses more tokens.
+    Note: With adaptive models enabled (default), the agent will:
+    1. Start with cheaper, faster models (if no specific model provided)
+    2. Automatically switch to more powerful models if stuck in the same position
     """
     
     print(model_help)
@@ -655,7 +787,8 @@ def main():
             llm_provider=args.provider,
             api_key=args.api_key,
             model=args.model,
-            session_log_file=args.log_file
+            session_log_file=args.log_file,
+            adaptive_models=args.adaptive_models
         )
         
         # Run the loop

@@ -47,7 +47,7 @@ echo -e "${GREEN}mGBA-http built successfully!${NC}"
 
 # Check if ROM file is provided
 if [ "$#" -eq 1 ]; then
-    ROM_FILE="Pokemon Emerald (U).gba"
+    ROM_FILE="$1"
     echo -e "${YELLOW}Using ROM file: ${ROM_FILE}${NC}"
     
     # Start mGBA with the ROM file
@@ -60,8 +60,8 @@ elif [ "$#" -gt 1 ]; then
     echo -e "${YELLOW}Usage: ./run.sh [ROM_FILE]${NC}"
     exit 1
 else
-    echo -e "${RED}No ROM file provided."
-    exit 1
+    echo -e "${YELLOW}No ROM file provided; defaulting to Pokemon Emerald!"
+    ROM_FILE="Pokemon Emerald (U).gba"
 fi
 
 # Wait for mGBA to initialize

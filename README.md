@@ -39,8 +39,7 @@ There's also support for OpenAI, Deepseek, and Claude.
 
 1. Clone this repository with submodules:
    ```bash
-   git clone --recursive https://github.com/yourusername/mgba-http-python.git
-   cd mgba-http-python
+   git clone --recursive https://github.com/NoahBPeterson/ChatbotPlaysGBA.git
    ```
 
 2. Run the setup script:
@@ -54,6 +53,16 @@ There's also support for OpenAI, Deepseek, and Claude.
    - Build the mGBA-http server with dotnet
    - Create a Python virtual environment with uv
    - Install dependencies
+
+3. Install dependencies
+
+ * Install mgba as a command-line utility (macOS & Linux)
+      ```
+      uv venv
+      source .venv/bin/activate
+      uv pip install -r requirements.txt
+      ```
+ * This emulator does not work without a Gameboy Advance ROM.
 
 ### Running the Server
 
@@ -79,7 +88,6 @@ The mGBA-http server is built using .NET, which is cross-platform. When running 
 
 ### Vision Navigation Components
 - **VisionController**: Enhanced controller with computer vision capabilities via Gemini
-- **solve_ice_puzzle.py**: Example script for solving ice puzzles with vision guidance
 - **VISION_NAVIGATION.md**: Documentation for the vision-based navigation system
 
 ## Memory Domains
@@ -151,16 +159,7 @@ vision_controller = VisionController(api_key=api_key)
 
 # Navigate complex areas
 vision_controller.navigate_complex_area("Pokemon Center")
-
-# Solve ice puzzles
-vision_controller.solve_ice_puzzle()
 ```
-
-# Or use the complete script 
-# With API key from .env file:
-# ./solve_ice_puzzle.py
-# Or with explicit API key:
-# ./solve_ice_puzzle.py --api-key YOUR_GEMINI_API_KEY
 
 See [VISION_NAVIGATION.md](VISION_NAVIGATION.md) for detailed information about the vision-based navigation system.
 

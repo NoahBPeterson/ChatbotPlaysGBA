@@ -14,7 +14,7 @@ logger = logging.getLogger('game_agent.anthropic_provider')
 class AnthropicProvider(LLMProvider):
     """Anthropic API provider for Claude interactions"""
     
-    def __init__(self, api_key: str, model: str = "claude-3-7-sonnet-20250219"):
+    def __init__(self, api_key: str, model: str = "claude-3-haiku-20240307"):
         super().__init__(api_key)
         self.model = model
         
@@ -186,20 +186,26 @@ class AnthropicProvider(LLMProvider):
             # Add the latest user message (prompt)
             messages.append({"role": "user", "content": prompt})
             
-            # Enable extended thinking for complex game states
-            thinking_config = {
-                "type": "enabled",
-                "budget_tokens": 8000  # Allocate a reasonable token budget for thinking
+            # Parameters for the API call
+            api_params = {
+                "model": self.model,
+                "messages": messages,
+                "tools": tools,
+                "max_tokens": 4096
             }
             
-            # Make the API call with tools and thinking enabled
-            response = self.client.messages.create(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-                thinking=thinking_config,
-                max_tokens=10000  # Increased from 4000 to be greater than thinking.budget_tokens (8000)
-            )
+            # Only enable extended thinking for Claude 3.7 models which support it
+            if "claude-3-7" in self.model:
+                logger.info(f"Using extended thinking with Claude 3.7 model: {self.model}")
+                thinking_config = {
+                    "type": "enabled",
+                    "budget_tokens": 8000  # Allocate a reasonable token budget for thinking
+                }
+                api_params["thinking"] = thinking_config
+                api_params["max_tokens"] = 10000  # Increase max_tokens for extended thinking
+            
+            # Make the API call
+            response = self.client.messages.create(**api_params)
             
             # Process the response to extract both thinking and tool use
             result_content = ""

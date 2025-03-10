@@ -178,6 +178,31 @@ For debugging issues, check the following:
 
 ## Advanced Features
 
+### Adaptive Model Selection
+
+The GameAgent now features an intelligent adaptive model selection system that balances cost and performance:
+
+1. **Cost-Effective Starting Point**: By default, the agent starts with cheaper, faster models:
+   - OpenAI: gpt-4o-mini
+   - Anthropic: claude-3-haiku
+   - Gemini: gemini-1.5-flash
+   - DeepSeek: deepseek-chat
+
+2. **Smart Escalation**: If the agent detects it's stuck (no movement for 5 consecutive steps), it automatically switches to more powerful reasoning models:
+   - OpenAI: gpt-4o
+   - Anthropic: claude-3-7-sonnet
+   - Gemini: gemini-1.5-pro
+   - DeepSeek: (remains on deepseek-chat as alternatives aren't available)
+
+3. **Progress Tracking**: The agent continuously monitors the player's position to determine if meaningful progress is being made in the game.
+
+This feature ensures the agent uses cost-effective models for straightforward scenarios, while automatically engaging more powerful models for complex situations that require deeper reasoning.
+
+To disable adaptive model selection, use the `--no-adaptive-models` flag:
+```
+./game_agent.py --provider openai --no-adaptive-models
+```
+
 ### Function Calling Integration
 
 The GameAgent now supports function calling with all major LLM providers:
